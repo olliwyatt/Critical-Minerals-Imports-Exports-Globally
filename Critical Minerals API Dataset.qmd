@@ -1,0 +1,449 @@
+---
+title: "Critical Minerals API Dataset"
+author: "Oliver Wyatt"
+format: html
+editor: visual
+---
+
+# About This Document
+
+I developed this code to collect import and export data for various relevant critical minerals from the UN Comtrade API.
+
+# Preparation and Set UP
+
+## Installing packages and Inputting API Key
+
+I have received two API keys through my UN Comtrade account. I now will install the r package and enter my API key.
+
+```{r}
+install.packages("comtradr")
+
+library(comtradr)
+
+
+set_primary_comtrade_key()
+```
+
+## Testing API Functionality
+
+Now that the key is connected for this session, I will test if it is working.
+
+```{r}
+
+cobalt_data <- ct_get_data(
+  reporter = "all_countries",
+  partner = "World",
+  commodity_code = "260500",
+  flow_direction = "export",
+  start_date = 2023,
+  end_date = 2023
+)
+
+View(cobalt_data)
+```
+
+It worked for one year. I will try retrieving five years worth of data now. (Note: 260500 is the code for cobalt ores and concentrates)
+
+```{r}
+
+cobalt_5years <- ct_get_data(
+  reporter = "all_countries",
+  partner = "World",
+  commodity_code = "260500",
+  flow_direction = "export",
+  start_date = 2020,
+  end_date = 2024
+)
+
+View(cobalt_5years)
+```
+
+Great, this is working as well.
+
+------------------------------------------------------------------------
+
+# Table of minerals and commodity codes
+
+```{r}
+
+library(comtradr)
+library(dplyr)
+library(readr)
+
+products <- data.frame(
+  mineral = c(
+    "Cobalt", "Cobalt",
+    "Lithium", "Lithium",
+    "Rare Earths", "Rare Earths", "Rare Earths"
+  ),
+  product = c(
+    "Cobalt ores",
+    "Cobalt intermediates",
+    "Lithium carbonate",
+    "Lithium oxide and hydroxide",
+    "Rare earth metals",
+    "Cerium compounds",
+    "Other rare earth compounds"
+  ),
+  hs_code = c(
+    "260500", "810520",
+    "283691", "282520",
+    "280530", "284610", "284690"
+  )
+)
+
+print(products)
+```
+
+# Reusable function
+
+```{r}
+
+dir.create("data/raw", recursive = TRUE,
+           showWarnings = FALSE)
+
+get_mineral_trade <- function(hs_code, mineral, product,
+                              start_year, end_year) {
+
+  # Divide the years into five-year blocks
+  start_years <- seq(start_year, end_year, by = 5)
+
+  results <- list()
+
+  for (year in start_years) {
+
+    final_year <- min(year + 4, end_year)
+
+    # File where this API response will be stored
+    filename <- paste0(
+      "data/raw/", hs_code, "_",
+      year, "_", final_year, ".rds"
+    )
+
+    if (file.exists(filename)) {
+
+      # Reuse previously downloaded data
+      data <- readRDS(filename)
+
+    } else {
+
+      message("Downloading: ", product,
+              " | ", year, "-", final_year)
+
+      data <- ct_get_data(
+        reporter = "all_countries",
+        partner = "World",
+        commodity_classification = "HS",
+        commodity_code = hs_code,
+        flow_direction = c("Import", "Export"),
+        start_date = year,
+        end_date = final_year
+      )
+
+      # Save data so we don't download it again
+      saveRDS(data, filename)
+    }
+
+    if (nrow(data) > 0) {
+      data$mineral <- mineral
+      data$product <- product
+
+      results[[length(results) + 1]] <- data
+    }
+  }
+
+  if (length(results) == 0) {
+    return(NULL)
+  }
+
+  # Combine all five-year blocks
+  bind_rows(results)
+}
+```
+
+### Testing Function
+
+```{r}
+
+test_data <- get_mineral_trade(
+  hs_code = "283691",
+  mineral = "Lithium",
+  product = "Lithium carbonate",
+  start_year = 2022,
+  end_year = 2024
+)
+
+View(test_data)
+```
+
+This worked. Now, I will test data quality/consistency
+
+# Data Quality Testing
+
+```{r}
+
+
+# Number of observations
+nrow(test_data)
+
+# Observations by year and trade direction
+table(test_data$period, test_data$flow_desc)
+
+# Product description and classification
+unique(test_data[
+  c("cmd_code", "cmd_desc", "classification_code")
+])
+```
+
+```{r}
+
+# Count observations by year and HS classification
+library(dplyr)
+
+test_data |>
+  count(period, classification_code) |>
+  arrange(period, classification_code)
+```
+
+This shows that not all reports are using the same hs classification code. However, after looking into the historical hs codes for lithium carbonate, it seems that the six-digit number has remained the same throughout different versions of hs code classifications so it's not necessarily an issue for this specific mineral. however, it would be important to check that other minerals have also retained the same six-digit code throughout various versions of hs classification codes, and account for any changes in the six digit codes over the years.
+
+```{r}
+
+
+# Test all minerals in two historical periods
+
+test_results <- list()
+
+for (i in seq_len(nrow(products))) {
+
+  for (start in c(1995, 2022)) {
+
+    end <- if (start == 1995) 1999 else 2024
+
+    result <- get_mineral_trade(
+      hs_code = products$hs_code[i],
+      mineral = products$mineral[i],
+      product = products$product[i],
+      start_year = start,
+      end_year = end
+    )
+
+    if (!is.null(result)) {
+      test_results[[length(test_results) + 1]] <- result
+    }
+  }
+}
+
+# Combine the results
+mineral_test <- dplyr::bind_rows(test_results)
+```
+
+```{r}
+
+library(dplyr)
+
+classification_summary <- mineral_test |>
+  group_by(mineral, product, cmd_code,
+           classification_code, cmd_desc) |>
+  summarise(
+    observations = n(),
+    first_year = min(as.integer(period)),
+    last_year = max(as.integer(period)),
+    .groups = "drop"
+  ) |>
+  arrange(mineral, product, first_year)
+
+View(classification_summary)
+
+
+# Summarize product availability across our two periods
+
+coverage_summary <- mineral_test |>
+  group_by(mineral, product, cmd_code) |>
+  summarise(
+    total_observations = n(),
+    records_1990s = sum(as.integer(period) <= 1999),
+    records_2020s = sum(as.integer(period) >= 2022),
+    classification_versions = n_distinct(classification_code),
+    descriptions = n_distinct(cmd_desc),
+    .groups = "drop"
+  )
+
+View(coverage_summary)
+print(coverage_summary)
+
+
+```
+
+There are some issues with cobalt intermediaries to look into. The code 810520 was used in 2020s but not in 1990s. It seems that this is the reason: Before 2002: Code 810510 covered cobalt intermediates, unwrought cobalt, powders, and waste and scrap. From 2002: These were separated into 810520 for intermediates, unwrought cobalt and powders, and 810530 for waste and scrap
+
+```{r}
+
+cobalt_old <- ct_get_data(
+  reporter = "all_countries",
+  partner = "World",
+  commodity_classification = "HS",
+  commodity_code = "810510",
+  flow_direction = c("Import", "Export"),
+  start_date = 1995,
+  end_date = 1999
+)
+
+# Examine historical descriptions
+cobalt_old |>
+  count(period, classification_code, cmd_desc)
+
+
+cobalt_old |>
+  distinct(classification_code, cmd_code, cmd_desc)
+
+```
+
+So here we see that with the older code 810510 cobalt information is available and the API is retrieving it. The issue is this cannot be combined with newer cobalt data as it uses a different description (discussed above).[**This is something to keep in mind during interpretation**]{.underline}.
+
+## Data Cleaning
+
+I will also remove the invalid cobalt observation
+
+```{r}
+
+mineral_test_clean <- mineral_test |>
+  filter(
+    !is.na(cmd_code),
+    !is.na(period),
+    !is.na(flow_desc)
+  )
+
+# Confirm that invalid records were removed
+nrow(mineral_test_clean)
+```
+
+# Importing data
+
+The code below imports data EXCEPT for the historical cobalt data
+
+```{r}
+
+# Create a list to store each product's data
+all_results <- list()
+
+# Loop through all seven mineral products
+for (i in seq_len(nrow(products))) {
+
+  message("Collecting: ", products$product[i])
+
+  all_results[[i]] <- get_mineral_trade(
+    hs_code = products$hs_code[i],
+    mineral = products$mineral[i],
+    product = products$product[i],
+    start_year = 1995,
+    end_year = 2024
+  )
+}
+
+# Combine all results into one dataset
+mineral_trade_raw <- dplyr::bind_rows(all_results)
+
+# Remove records missing essential identifiers
+mineral_trade <- mineral_trade_raw |>
+  dplyr::filter(
+    !is.na(cmd_code),
+    !is.na(period),
+    !is.na(flow_desc)
+  )
+
+# Save the combined dataset
+readr::write_csv(
+  mineral_trade,
+  "data/mineral_trade_1995_2024.csv"
+)
+```
+
+Checking how much data I collected
+
+```{r}
+
+# Total number of observations
+nrow(mineral_trade)
+
+# Total number of variables
+ncol(mineral_trade)
+
+# Number of observations for each mineral product
+mineral_trade |>
+  count(mineral, product)
+
+# Number of observations by year
+mineral_trade |>
+  count(period) |>
+  arrange(period)
+```
+
+Also need to retrieve the old cobalt data with the older hs commodity code
+
+```{r}
+
+cobalt_historical <- get_mineral_trade(
+  hs_code = "810510",
+  mineral = "Cobalt",
+  product = "Cobalt products including waste and scrap",
+  start_year = 1995,
+  end_year = 2001
+)
+
+readr::write_csv(
+  cobalt_historical,
+  "data/cobalt_historical_1995_2001.csv"
+)
+```
+
+Checking coverage by product and year
+
+```{r}
+
+library(dplyr)
+
+product_coverage <- mineral_trade |>
+  group_by(product) |>
+  summarise(
+    observations = n(),
+    first_year = min(as.integer(period)),
+    last_year = max(as.integer(period)),
+    countries = n_distinct(reporter_iso),
+    .groups = "drop"
+  )
+
+View(product_coverage)
+```
+
+Checking for duplicates
+
+```{r}
+
+duplicates <- mineral_trade |>
+  group_by(
+    reporter_iso,
+    period,
+    cmd_code,
+    flow_desc
+  ) |>
+  summarise(
+    records = n(),
+    .groups = "drop"
+  ) |>
+  filter(records > 1)
+
+View(duplicates)
+nrow(duplicates)
+```
+
+```{r}
+
+View(mineral_trade)
+```
+
+**mineral_trade** includes all data EXCEPT old cobalt bc of different hs code/description. Need to decide how to handle this.
+
+The complete older cobalt data is in the dataset **cobalt_historical**
+
+
