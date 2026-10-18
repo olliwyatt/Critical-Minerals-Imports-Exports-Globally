@@ -1,6 +1,6 @@
 **Critical Minerals Trade: 1995–2024**
 
-**Project Overview**
+**Overview**
 
 This project investigates international trade in critical minerals, focusing on cobalt, lithium, and rare-earth products between 1995 and 2024.
 
@@ -31,3 +31,4 @@ United Nations Statistics Division, UN Comtrade Database.
 
 https://comtradeplus.un.org/
 
+*The project is not yet complete*
